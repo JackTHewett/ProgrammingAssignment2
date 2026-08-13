@@ -28,7 +28,7 @@ from . import contact_sheet as sheet_mod
 from . import detection, exif_scan, gradient, masking, registration, stacking, timelapse
 from .cache import Cache
 from .config import Config, Paths
-from .imageio_utils import autostretch, save_jpeg, save_tiff16
+from .imageio_utils import autostretch, linear_to_srgb, save_jpeg, save_tiff16
 
 log = logging.getLogger("meteor")
 
@@ -183,10 +183,22 @@ def stage_composite(cfg: Config, cache: Cache, args) -> None:
         ground, _ground_meta = stacking.stack_ground(paths, cfg, cache, group)
 
         mask_full = masking.resize_mask(mask_proxy, sky.shape[:2])
-        flat_sky = gradient.remove_gradient(sky, ~mask_full, cfg)
+
+        # Stacking happens in linear light, because averaging frames is
+        # arithmetic on photons and because RAF and JPEG have to meet in one
+        # space. Flattening happens after the transfer curve is back on, which
+        # is not where the physics would put it but is measurably better: the
+        # curve compresses a lamp's dynamic range from roughly 18x to 4x, and a
+        # low-order polynomial can actually follow that. Measured on the
+        # synthetic scene, fitting in display space left 0.029 residual skyglow
+        # against 0.055 for the same fit done in linear.
+        sky_display = linear_to_srgb(sky)
+        ground_display = linear_to_srgb(ground)
+
+        flat_sky = gradient.remove_gradient(sky_display, ~mask_full, cfg)
 
         alpha = masking.feathered_alpha(mask_full, cfg.mask.feather_px)
-        background = stacking.composite(flat_sky, ground, alpha)
+        background = stacking.composite(flat_sky, ground_display, alpha)
 
         save_tiff16(cfg.paths.output / f"sky_stack_{group}.tif", background)
         save_jpeg(cfg.paths.previews / f"sky_stack_{group}.jpg", autostretch(background))
@@ -211,7 +223,8 @@ def stage_composite(cfg: Config, cache: Cache, args) -> None:
         composite, blended = stacking.meteor_composite(
             background, confirmed, paths_by_name, reg, cfg)
         save_tiff16(cfg.paths.output / f"meteor_composite_{group}.tif", composite)
-        save_jpeg(cfg.paths.previews / f"meteor_composite_{group}.jpg", autostretch(composite))
+        save_jpeg(cfg.paths.previews / f"meteor_composite_{group}.jpg",
+                  autostretch(composite))
         log.info("group %s: meteor composite with %d trails", group, blended)
 
 

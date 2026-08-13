@@ -188,7 +188,12 @@ def meteor_composite(background: np.ndarray, confirmed: list[dict], paths_by_nam
     streak sits correctly against the stars, and is restricted to a feathered
     region around the detection so the rest of that frame's noise is not pulled
     in with it.
+
+    ``background`` is already in display space, so each source frame gets the
+    transfer curve applied before blending - comparing linear pixels against
+    encoded ones would make every trail look far too dark to survive a lighten.
     """
+    from .imageio_utils import linear_to_srgb
     result = background.copy()
     blended = 0
 
@@ -203,7 +208,7 @@ def meteor_composite(background: np.ndarray, confirmed: list[dict], paths_by_nam
 
         image, _source = load_for_stack(path, prefer_raw=cfg.stack.prefer_raw,
                                         use_camera_wb=cfg.stack.raw_use_camera_wb)
-        aligned = apply_transform(image, np.asarray(entry["matrix"], dtype=float))
+        aligned = linear_to_srgb(apply_transform(image, np.asarray(entry["matrix"], dtype=float)))
         if aligned.shape != result.shape:
             log.warning("%s does not match the stack shape - skipped", name)
             continue

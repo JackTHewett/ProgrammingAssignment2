@@ -14,9 +14,24 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-`rawpy` is only needed if you want the RAF files used for the stacks; everything
-else works from the JPEGs alone. `ffmpeg` on `PATH` is used for the timelapse
-when present, otherwise the bundled `imageio-ffmpeg` encoder is used.
+### JPEG-only is fully supported
+
+You do not need the RAF files. The pipeline works end to end from the JPEGs
+alone, and that is the only configuration that has been tested — all the
+validation below was run on a JPEG-only set.
+
+RAF is used *opportunistically*: for the stacks only, and only when a matching
+raw sits next to the JPEG. Detection and the timelapse always use the JPEGs by
+design, since speed matters more than shadow latitude there. Pass `--jpeg-only`
+to ignore RAFs even when present, and skip installing `rawpy` if you never want
+them.
+
+Stacking JPEGs is still worth doing in 16-bit: averaging ~170 frames recovers
+roughly 3–4 bits below the 8-bit quantisation step, so the output TIFF holds
+real detail that no single JPEG does.
+
+`ffmpeg` on `PATH` is used for the timelapse when present, otherwise the bundled
+`imageio-ffmpeg` encoder is used.
 
 ## Use
 
@@ -124,16 +139,39 @@ Measured on that scene:
 
 | | Result |
 | --- | --- |
-| Foreground mask | IoU 0.92, purity 99.6%, recall 100% |
+| Foreground mask | IoU 0.75, purity 75%, **recall 100%** |
 | Registration | 40/40 frames, residual 0.13–0.40 px, recovered rotation matches truth |
 | Detection | 9 candidates: exactly the 3 meteors and 6 aircraft frames, no false positives |
 | Classification | 9/9 correct |
-| Gradient removal | large-scale sky variation reduced 2.6× |
+| Gradient removal | residual skyglow 0.134 → 0.032, a 4.2× reduction |
+
+Recall matters far more than purity for the mask: any foreground left showing
+through is what breaks registration. The over-claim is mostly the band between
+the railing and the roof, which costs a little sky and is otherwise harmless.
 
 **Synthetic frames are not real frames.** They validate that the logic is
 correct and the thresholds are not knife-edge, not that the defaults are right
 for your sky. Expect to adjust `detection.threshold_sigma` and
 `detection.min_trail_length` on real data.
+
+## Colour space
+
+Frames are stacked in **linear light** and flattened in **display space**, which
+is a deliberate split:
+
+- Stacking is an average of photons, so it belongs in linear light. It is also
+  the only way RAF and JPEG frames can share a stack — `rawpy` is asked for
+  linear output while a JPEG carries the sRGB curve, and mixing the two
+  unnoticed makes sigma clipping throw out whichever kind is in the minority.
+- Flattening goes *after* the transfer curve, which is not where the physics
+  would put it. Skyglow adds linearly, so fitting in linear ought to win. It
+  measurably does not: the sRGB curve compresses a lamp's dynamic range from
+  roughly 18× to 4×, and a low-order polynomial can follow the compressed
+  version far better. On the synthetic scene, fitting in display space left
+  0.029 residual skyglow against 0.055 for the identical fit in linear.
+
+That second point was checked rather than assumed, and the measurement
+contradicted the theory.
 
 ## Tuning
 

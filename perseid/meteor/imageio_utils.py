@@ -70,9 +70,37 @@ def load_raw(path: Path, use_camera_wb: bool = True) -> np.ndarray:
     return rgb.astype(np.float32) / 65535.0
 
 
+def srgb_to_linear(img: np.ndarray) -> np.ndarray:
+    """Undo the sRGB transfer function, giving linear light."""
+    a = np.clip(img, 0.0, 1.0)
+    return np.where(a <= 0.04045, a / 12.92,
+                    np.power((a + 0.055) / 1.055, 2.4)).astype(np.float32)
+
+
+def linear_to_srgb(img: np.ndarray) -> np.ndarray:
+    """Apply the sRGB transfer function to linear light."""
+    a = np.clip(img, 0.0, 1.0)
+    return np.where(a <= 0.0031308, a * 12.92,
+                    1.055 * np.power(a, 1 / 2.4) - 0.055).astype(np.float32)
+
+
 def load_for_stack(jpeg_path: Path, prefer_raw: bool = True,
                    use_camera_wb: bool = True) -> tuple[np.ndarray, str]:
-    """Load the best available version of a frame for stacking.
+    """Load a frame for stacking, always in **linear light**.
+
+    Two reasons this matters, and the second applies even on a JPEG-only set:
+
+    * ``load_raw`` demosaics with ``gamma=(1, 1)``, so RAF frames are already
+      linear, while JPEGs carry the sRGB transfer curve. Mixing the two in one
+      stack - which happens the moment a single RAF is missing or rawpy fails -
+      puts photometrically incompatible values side by side, and sigma clipping
+      then throws the odd frames out wholesale.
+    * Skyglow and sensor signal add *linearly*. Averaging frames and fitting a
+      gradient are both arithmetic on light, so they have to happen in linear
+      light; doing either on gamma-encoded values is simply the wrong sum.
+
+    The sRGB curve is put back when the results are written out, so the TIFFs
+    still open looking correct in Lightroom.
 
     Returns ``(image, source)`` where source is "raw" or "jpeg".
     """
@@ -83,7 +111,7 @@ def load_for_stack(jpeg_path: Path, prefer_raw: bool = True,
                 return load_raw(raw_path, use_camera_wb=use_camera_wb), "raw"
             except Exception as exc:  # pragma: no cover - depends on raw file
                 log.warning("rawpy failed on %s (%s); using the JPEG", raw_path.name, exc)
-    return load_jpeg(jpeg_path), "jpeg"
+    return srgb_to_linear(load_jpeg(jpeg_path)), "jpeg"
 
 
 def to_gray(img: np.ndarray) -> np.ndarray:

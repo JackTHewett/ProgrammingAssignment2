@@ -61,7 +61,12 @@ def _find_stars(img: np.ndarray, cfg: Config) -> np.ndarray:
         return np.empty((0, 2), dtype=float)
     table.sort("flux", reverse=True)
     table = table[: rcfg.fallback_max_stars]
-    return np.transpose((np.asarray(table["xcentroid"]), np.asarray(table["ycentroid"])))
+    # photutils 3.0 renamed these columns; support both rather than relying on
+    # the compatibility shim, which emits a deprecation warning per call and
+    # buries the run log.
+    x_col = "x_centroid" if "x_centroid" in table.colnames else "xcentroid"
+    y_col = "y_centroid" if "y_centroid" in table.colnames else "ycentroid"
+    return np.transpose((np.asarray(table[x_col]), np.asarray(table[y_col])))
 
 
 def _degenerate(points: np.ndarray, shape: tuple[int, int], cfg: Config) -> Optional[str]:

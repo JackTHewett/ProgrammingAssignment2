@@ -35,6 +35,16 @@ METEORS = {6: (300, 180, 470, 300), 19: (900, 120, 1120, 340), 31: (500, 400, 66
 AIRCRAFT = {11: (120, 500, 520, 380), 26: (1400, 200, 1000, 460)}
 
 
+def _linear_to_srgb(img: np.ndarray) -> np.ndarray:
+    """sRGB transfer curve, matching meteor.imageio_utils.linear_to_srgb.
+
+    Kept local so the generator runs standalone.
+    """
+    a = np.clip(img, 0.0, 1.0)
+    return np.where(a <= 0.0031308, a * 12.92,
+                    1.055 * np.power(a, 1 / 2.4) - 0.055).astype(np.float32)
+
+
 def _gaussian_blob(canvas: np.ndarray, x: float, y: float, flux: float, sigma: float) -> None:
     """Add a Gaussian point source, touching only the pixels that matter."""
     radius = int(math.ceil(sigma * 3.5))
@@ -93,14 +103,19 @@ def _light_pollution() -> np.ndarray:
     """Smooth gradient plus a bright lamp near the left edge."""
     yy, xx = np.mgrid[0:HEIGHT, 0:WIDTH]
     nx, ny = xx / WIDTH, yy / HEIGHT
-    gradient = 0.16 + 0.30 * (1 - ny) ** 1.6 + 0.12 * nx + 0.05 * nx * (1 - ny)
+    gradient = 0.030 + 0.075 * (1 - ny) ** 1.6 + 0.028 * nx + 0.012 * nx * (1 - ny)
     lamp = np.zeros((HEIGHT, WIDTH), dtype=np.float32)
-    _gaussian_blob(lamp, 40, HEIGHT * 0.62, 0.9, sigma=190)
+    _gaussian_blob(lamp, 40, HEIGHT * 0.62, 0.55, sigma=190)
     return (gradient + lamp).astype(np.float32)
 
 
 def _foreground() -> tuple[np.ndarray, np.ndarray]:
-    """Static roof and railing. Returns (image, mask)."""
+    """Static roof and railing, in linear light. Returns (image, mask).
+
+    These values are deliberately far below the sky level: a building against a
+    light-polluted sky is a silhouette, which is the contrast the mask stage
+    depends on.
+    """
     img = np.zeros((HEIGHT, WIDTH), dtype=np.float32)
     mask = np.zeros((HEIGHT, WIDTH), dtype=bool)
 
@@ -109,19 +124,19 @@ def _foreground() -> tuple[np.ndarray, np.ndarray]:
     for x in range(WIDTH):
         top = roof_y + int(26 * math.sin(x / WIDTH * math.pi * 1.3))
         mask[top:, x] = True
-        img[top:, x] = 0.035
+        img[top:, x] = 0.0065
 
     # Railing: vertical bars above the roof with a horizontal rail.
     rail_top = roof_y - 88
     for x in range(60, WIDTH - 60, 96):
         mask[rail_top:roof_y, x:x + 9] = True
-        img[rail_top:roof_y, x:x + 9] = 0.05
+        img[rail_top:roof_y, x:x + 9] = 0.0094
     mask[rail_top:rail_top + 11, :] = True
-    img[rail_top:rail_top + 11, :] = 0.05
+    img[rail_top:rail_top + 11, :] = 0.0094
 
     # A couple of lit windows, so the foreground is not uniformly dark.
-    img[roof_y + 60:roof_y + 110, 300:360] = 0.55
-    img[roof_y + 60:roof_y + 110, 900:960] = 0.42
+    img[roof_y + 60:roof_y + 110, 300:360] = 0.10
+    img[roof_y + 60:roof_y + 110, 900:960] = 0.08
     return img, mask
 
 
@@ -213,10 +228,16 @@ def generate(out_dir: Path, n_frames: int = 40, break_at: int = 25,
 
         # Foreground sits in front of everything.
         canvas = np.where(fg_mask, fg_img, canvas)
+        # Sensor noise belongs in linear light, before the transfer curve.
         canvas += RNG.normal(0, 0.0075, canvas.shape).astype(np.float32)
 
-        rgb = np.clip(np.dstack([canvas * 0.94, canvas * 0.97, canvas * 1.06]), 0, 1)
-        array = (rgb * 255).astype(np.uint8)
+        # Everything above is linear light, as a sensor records it. The sRGB
+        # transfer curve goes on last, which is what the camera's JPEG engine
+        # does. Building the scene in encoded space instead would make the
+        # skyglow polynomial in the wrong domain and quietly bias any test of
+        # the gradient fit.
+        rgb_linear = np.clip(np.dstack([canvas * 0.94, canvas * 0.97, canvas * 1.06]), 0, 1)
+        array = (_linear_to_srgb(rgb_linear) * 255 + 0.5).astype(np.uint8)
 
         name = f"DSCF{4954 + frame:04d}.JPG"
         _write_exif(out_dir / name, array, exposure, iso, clock)
